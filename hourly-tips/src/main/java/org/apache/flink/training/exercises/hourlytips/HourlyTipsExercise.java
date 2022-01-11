@@ -25,9 +25,13 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.training.exercises.common.datatypes.TaxiFare;
 import org.apache.flink.training.exercises.common.sources.TaxiFareGenerator;
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException;
+import org.apache.flink.util.Collector;
 
 /**
  * The Hourly Tips exercise from the Flink training.
@@ -40,7 +44,9 @@ public class HourlyTipsExercise {
     private final SourceFunction<TaxiFare> source;
     private final SinkFunction<Tuple3<Long, Long, Float>> sink;
 
-    /** Creates a job using the source and sink provided. */
+    /**
+     * Creates a job using the source and sink provided.
+     */
     public HourlyTipsExercise(
             SourceFunction<TaxiFare> source, SinkFunction<Tuple3<Long, Long, Float>> sink) {
 
@@ -76,18 +82,47 @@ public class HourlyTipsExercise {
         DataStream<TaxiFare> fares = env.addSource(source);
 
         // replace this with your solution
-        if (true) {
-            throw new MissingSolutionException();
-        }
+        DataStream<Tuple3<Long, Long, Float>> hourlyMax = fares
+                .keyBy(fare -> fare.driverId)
+                .window(TumblingEventTimeWindows.of(Time.hours(1)))
+                .reduce((f1, f2) -> {
+                    f1.tip += f2.tip;
+                    return f1;
+                })// group by driver id, sum it every hour
+                .keyBy(fare -> fare.getEventTimeMillis() / 1000 / 3600)// group by hour, find the max
+                .window(TumblingEventTimeWindows.of(Time.hours(1))) // flush result every 1 hour
+                .reduce((f1, f2) -> f1.tip > f2.tip ? f1 : f2, new LastIsMax()); // same as https://nightlies.apache.org/flink/flink-docs-release-1.14/docs/learn-flink/streaming_analytics/#incremental-aggregation-example
+        // .reduce((f1, f2) -> f1.tip > f2.tip ? f1 : f2)
+        // .map(f -> {
+        //     long hour = f.getEventTimeMillis() / 1000 / 3600;
+        //     return Tuple3.of(hour, f.driverId, f.tip);
+        // });
 
         // the results should be sent to the sink that was passed in
         // (otherwise the tests won't work)
         // you can end the pipeline with something like this:
 
         // DataStream<Tuple3<Long, Long, Float>> hourlyMax = ...
-        // hourlyMax.addSink(sink);
+        hourlyMax.addSink(sink);
 
         // execute the pipeline and return the result
         return env.execute("Hourly Tips");
+    }
+
+    public static class LastIsMax extends ProcessWindowFunction<
+            TaxiFare,
+            Tuple3<Long, Long, Float>,
+            Long,
+            TimeWindow> {
+
+        @Override
+        public void process(Long key,
+                            Context context,
+                            Iterable<TaxiFare> elements,
+                            Collector<Tuple3<Long, Long, Float>> out) throws Exception {
+            TaxiFare maxOne = elements.iterator().next();
+            // long hour = maxOne.getEventTimeMillis() / 1000 / 3600;
+            out.collect(Tuple3.of(key, maxOne.driverId, maxOne.tip));
+        }
     }
 }
